@@ -1,0 +1,23 @@
+{
+  "name": "pdf-local-redact",
+  "version": "1.0.0",
+  "private": true,
+  "description": "浏览器本地 PDF 涂黑（真删除）与已知密码去密。不上传。",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test test/*.test.js && node scripts/build.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/2045shane/pdf-local-redact.git"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@cantoo/pdf-lib": "2.11.1",
+    "pdfjs-dist": "4.10.38"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.5"
+  }
+}

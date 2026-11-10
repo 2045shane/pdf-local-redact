@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "本地 PDF 涂黑和去密码",
+  "version": "1.0.0",
+  "description": "在浏览器本地用已知密码去除 PDF 打开密码，并在专业版解锁后真删除框选内容。文件不会上传。",
+  "action": {
+    "default_title": "打开本地 PDF 工具"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}
