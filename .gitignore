@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.*
+.env.local
+.claude/settings.local.json
+extension/app.js
+extension/pdf.worker.min.mjs
+extension/cmaps/
+extension/standard_fonts/
+*.log
+.DS_Store
