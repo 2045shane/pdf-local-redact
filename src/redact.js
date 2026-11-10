@@ -213,7 +213,9 @@ function scrubMarkedContent(ops) {
 function removeAnnots(page, rects) {
   const annots = page.node.Annots();
   if (!(annots instanceof PDFArray)) return;
-  const context = page.doc.context;
+  const doc = page.doc;
+  const context = doc.context;
+  const removed = [];
   for (let i = annots.size() - 1; i >= 0; i -= 1) {
     const item = annots.get(i);
     const annot = context.lookup(item);
@@ -221,9 +223,127 @@ function removeAnnots(page, rects) {
     const rect = annotRect(annot);
     if (!rect || !hitsAny(rect, rects)) continue;
     annots.remove(i);
-    wipeValue(context, annot.get(PDFName.of("AP")));
-    if (item instanceof PDFRef) context.delete(item);
+    removed.push({ ref: item instanceof PDFRef ? item : null, dict: annot });
   }
+  const droppedFields = new Set();
+  for (const item of removed) {
+    if (!isFormWidget(item.dict)) {
+      dropAnnotationObject(context, item.ref, item.dict);
+      continue;
+    }
+    const root = fieldRoot(context, item.ref, item.dict);
+    if (droppedFields.has(root.dict)) continue;
+    droppedFields.add(root.dict);
+    dropFormField(doc, root.ref, root.dict);
+  }
+}
+
+function isFormWidget(dict) {
+  const subtype = nameText(dict.lookup(PDFName.of("Subtype")));
+  return subtype === "Widget" || Boolean(dict.lookup(PDFName.of("FT")) || dict.get(PDFName.of("Parent")));
+}
+
+function fieldRoot(context, ref, dict) {
+  let currentRef = ref;
+  let current = dict;
+  const seen = new Set();
+  while (current instanceof PDFDict && !seen.has(current)) {
+    seen.add(current);
+    const parentRef = current.get(PDFName.of("Parent"));
+    if (!(parentRef instanceof PDFRef)) return { ref: currentRef, dict: current };
+    const parent = context.lookup(parentRef);
+    if (!(parent instanceof PDFDict)) return { ref: currentRef, dict: current };
+    currentRef = parentRef;
+    current = parent;
+  }
+  return { ref: currentRef, dict: current };
+}
+
+function dropFormField(doc, ref, dict) {
+  const context = doc.context;
+  const nodes = [];
+  collectFieldNodes(context, ref, dict, nodes, new Set());
+  for (const node of nodes) unlinkFieldNode(doc, node.dict);
+  for (const node of nodes) {
+    deleteAppearance(context, node.dict);
+    dropIndirect(context, node.dict.get(PDFName.of("V")));
+    dropIndirect(context, node.dict.get(PDFName.of("DV")));
+    node.dict.delete(PDFName.of("V"));
+    node.dict.delete(PDFName.of("DV"));
+    node.dict.delete(PDFName.of("AP"));
+  }
+  for (const node of nodes) {
+    if (node.ref) context.delete(node.ref);
+  }
+}
+
+function collectFieldNodes(context, ref, dict, out, seen) {
+  if (!(dict instanceof PDFDict) || seen.has(dict)) return;
+  seen.add(dict);
+  out.push({ ref, dict });
+  const kids = context.lookup(dict.get(PDFName.of("Kids")));
+  if (!(kids instanceof PDFArray)) return;
+  for (let i = 0; i < kids.size(); i += 1) {
+    const child = kids.get(i);
+    const childRef = child instanceof PDFRef ? child : null;
+    const childDict = childRef ? context.lookup(childRef) : child;
+    if (childDict instanceof PDFDict) collectFieldNodes(context, childRef, childDict, out, seen);
+  }
+}
+
+function unlinkFieldNode(doc, dict) {
+  const context = doc.context;
+  const acro = context.lookup(doc.catalog.get(PDFName.of("AcroForm")));
+  if (acro instanceof PDFDict) {
+    removeDictFromArray(context, context.lookup(acro.get(PDFName.of("Fields"))), dict);
+    removeDictFromArray(context, context.lookup(acro.get(PDFName.of("CO"))), dict);
+  }
+  for (const page of doc.getPages()) {
+    removeDictFromArray(context, page.node.Annots(), dict);
+  }
+}
+
+function removeDictFromArray(context, array, dict) {
+  if (!(array instanceof PDFArray)) return;
+  for (let i = array.size() - 1; i >= 0; i -= 1) {
+    if (context.lookup(array.get(i)) === dict) array.remove(i);
+  }
+}
+
+function dropAnnotationObject(context, ref, dict) {
+  deleteAppearance(context, dict);
+  dropIndirect(context, dict.get(PDFName.of("Contents")));
+  dropIndirect(context, dict.get(PDFName.of("RC")));
+  if (ref) context.delete(ref);
+}
+
+function deleteAppearance(context, dict) {
+  const apEntry = dict.get(PDFName.of("AP"));
+  const ap = context.lookup(apEntry);
+  if (ap instanceof PDFDict) {
+    for (const key of ["N", "R", "D"]) deleteApValue(context, ap.get(PDFName.of(key)));
+  }
+  if (apEntry instanceof PDFRef) context.delete(apEntry);
+}
+
+function deleteApValue(context, value) {
+  if (!value) return;
+  const resolved = value instanceof PDFRef ? context.lookup(value) : value;
+  if (resolved instanceof PDFRawStream) {
+    if (value instanceof PDFRef) context.delete(value);
+    return;
+  }
+  if (resolved instanceof PDFDict) {
+    for (const [, child] of resolved.entries()) {
+      const childObj = child instanceof PDFRef ? context.lookup(child) : child;
+      if (childObj instanceof PDFRawStream && child instanceof PDFRef) context.delete(child);
+    }
+    if (value instanceof PDFRef) context.delete(value);
+  }
+}
+
+function dropIndirect(context, value) {
+  if (value instanceof PDFRef) context.delete(value);
 }
 
 function annotRect(annot) {
@@ -243,21 +363,6 @@ function annotRect(annot) {
     width: Math.abs(x2 - x1),
     height: Math.abs(y2 - y1),
   };
-}
-
-function wipeValue(context, value) {
-  if (value instanceof PDFRef) {
-    const resolved = context.lookup(value);
-    context.delete(value);
-    if (resolved instanceof PDFDict || resolved instanceof PDFRawStream) {
-      const dict = resolved instanceof PDFRawStream ? resolved.dict : resolved;
-      for (const [, child] of dict.entries()) wipeValue(context, child);
-    }
-    return;
-  }
-  if (value instanceof PDFArray) {
-    for (let i = 0; i < value.size(); i += 1) wipeValue(context, value.get(i));
-  }
 }
 
 function freshText() {
@@ -771,6 +876,15 @@ function channelsFor(color) {
     if (name === "DeviceGray") return 1;
     if (name === "DeviceRGB") return 3;
     if (name === "DeviceCMYK") return 4;
+  }
+  if (color instanceof PDFArray && color.size() >= 2 && nameText(color.lookup(0)) === "ICCBased") {
+    const profile = color.lookup(1);
+    const dict = profile instanceof PDFRawStream ? profile.dict : profile;
+    const n = dict instanceof PDFDict ? dict.lookup(PDFName.of("N")) : null;
+    if (n instanceof PDFNumber) {
+      const channels = n.asNumber();
+      if (channels === 1 || channels === 3 || channels === 4) return channels;
+    }
   }
   return 0;
 }

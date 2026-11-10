@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +29,37 @@ export function pdfInfo(bytes) {
   writeFileSync(file, bytes);
   try {
     return execFileSync("pdfinfo", [file], { encoding: "utf8" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export function assertPdfHealthy(bytes) {
+  const dir = mkdtempSync(join(tmpdir(), "pdf-redact-"));
+  const file = join(dir, "in.pdf");
+  writeFileSync(file, bytes);
+  try {
+    const info = spawnSync("pdfinfo", [file], { encoding: "utf8" });
+    if (info.status !== 0 || info.stderr) {
+      throw new Error(`pdfinfo failed\n${info.stderr}\n${info.stdout}`);
+    }
+    const check = spawnSync("qpdf", ["--check", file], { encoding: "utf8" });
+    if (check.status !== 0 || check.stderr || /invalid xref|error:/i.test(check.stdout)) {
+      throw new Error(`qpdf --check failed\n${check.stderr}\n${check.stdout}`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+export function uncompressedPdf(bytes) {
+  const dir = mkdtempSync(join(tmpdir(), "pdf-redact-"));
+  const input = join(dir, "in.pdf");
+  const output = join(dir, "out.pdf");
+  writeFileSync(input, bytes);
+  try {
+    execFileSync("qpdf", ["--stream-data=uncompress", "--decode-level=all", input, output]);
+    return readFileSync(output);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
